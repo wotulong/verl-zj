@@ -34,10 +34,9 @@ from verl.utils.megatron_utils import TransformerConfig, convert_config
 
 class ParallelQwen2DecoderLayer(nn.Module):
 
-    def __init__(self, config: Qwen2Config, megatron_config: ModelParallelConfig, layer_idx: int):
+    def __init__(self, config: Qwen2Config, megatron_config: ModelParallelConfig):
         super().__init__()
         self.config: TransformerConfig = convert_config(config, megatron_config)
-        self.layer_idx = layer_idx
         self.hidden_size = config.hidden_size
         self.self_attn = ParallelQwen2Attention(config=config, megatron_config=megatron_config)
 
@@ -102,11 +101,11 @@ class ParallelQwen2DecoderLayer(nn.Module):
 
 class ParallelQwen2DecoderLayerRmPad(nn.Module):
 
-    def __init__(self, config: Qwen2Config, megatron_config: ModelParallelConfig, layer_idx: int):
+    def __init__(self, config: Qwen2Config, megatron_config: ModelParallelConfig):
         super().__init__()
         self.config: TransformerConfig = convert_config(config, megatron_config)
+        self.megatron_config = megatron_config
         self.hidden_size = config.hidden_size
-        self.layer_idx = layer_idx
         self.self_attn = ParallelQwen2AttentionRmPad(config=config, megatron_config=megatron_config)
 
         self.mlp = ParallelQwen2MLP(config, megatron_config=megatron_config)

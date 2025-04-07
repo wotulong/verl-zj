@@ -43,6 +43,15 @@ def default_weight_loader(param: torch.Tensor, loaded_weight: torch.Tensor) -> N
     param.data = loaded_weight.data
 
 
+def experts_array_weight_loader(param: torch.Tensor, loaded_weight: torch.Tensor, expert_id) -> None:
+    """Default weight loader."""
+    assert param[expert_id].size() == loaded_weight.size()
+    assert (param.data.dtype == loaded_weight.data.dtype
+           ), "if we want to shared weights, the data type should also be the same"
+
+    param.data[expert_id] = loaded_weight.data
+
+
 def gpt2_weight_loader(actor_weights: Dict, vllm_model: nn.Module) -> nn.Module:
     params_dict = dict(vllm_model.named_parameters(remove_duplicate=False))
     for name, loaded_weight in actor_weights.items():
@@ -154,6 +163,47 @@ def llama_megatron_core_weight_loader(actor_weights: Dict, vllm_model: nn.Module
             param = params_dict[name]
             weight_loader = getattr(param, "weight_loader", default_weight_loader)
             weight_loader(param, loaded_weight)
+
+
+def deepseekv2_megatron_weight_loader(actor_weights: Dict, vllm_model: nn.Module) -> nn.Module:
+    print(f"=========> now, loading actor model (deepseekv2) weight of megatron format to vllm ..., rank:{torch.distributed.get_rank()}")
+    params_dict = dict(vllm_model.named_parameters())
+    experts_weight_mapping = {
+        "gate_up_proj.weight": "w13_weight",
+        "down_proj.weight": "w2_weight"
+    }
+    for name, loaded_weight in actor_weights.items():
+        if "rotary_emb.inv_freq" in name:
+            continue
+        if vllm_model.config.tie_word_embeddings and "lm_head.weight" in name:
+            continue
+        # 路由专家层参数映射，其他参数无需映射
+        src_name = name
+        # 路由专家
+        if ".experts" in name:
+            expert_id = int(name.replace(".gate_up_proj.weight", "").replace(".down_proj.weight","").split(".")[-1])
+            name = name.replace(f"{expert_id}.gate_up_proj.weight", "w13_weight").replace(f"{expert_id}.down_proj.weight","w2_weight")
+            param = params_dict[name]
+            name = f"{name}[{expert_id}]"
+            weight_loader = experts_array_weight_loader#getattr(param, "weight_loader", experts_array_weight_loader)
+            # print(f"==========>> src_name:{src_name}, param name:{name}, param_shape:{param.shape}, weight shape:{loaded_weight.shape}")
+            # print(f"=========>>>>> weight_loader:{weight_loader}")
+            weight_loader(param, loaded_weight, expert_id)
+            # print(f"=========>>>>>weight after weight_loader:{param.data[expert_id][0][:10]}, loaded_weight:{loaded_weight[0][:10].data}")
+            # params_dict[name] = param
+        else:
+            param = params_dict[name]
+            weight_loader = getattr(param, "weight_loader", default_weight_loader)
+            # print(f"==========>> src_name:{src_name}, param name:{name}, param_shape:{param.shape}, weight shape:{loaded_weight.shape}")
+            weight_loader(param, loaded_weight)
+    
+    # with open("./actor_weight_dp2-lite-202500403.txt", 'wt', encoding='utf-8') as f:
+    #     for name, loaded_weight in actor_weights.items():
+    #         f.write(f"name:{name}, shape:{loaded_weight.shape}\n\t{loaded_weight}\n")
+
+    # with open("./vllm_weight_dp2-lite-202500403.txt", 'wt', encoding='utf-8') as f:
+    #     for name, loaded_weight in params_dict.items():
+    #         f.write(f"name:{name}, shape:{loaded_weight.shape}\n\t{loaded_weight}\n")
 
 
 def _replace_name(megatron_name, name_mapping):
@@ -296,6 +346,7 @@ __MODEL_MEGATRON_WEIGHT_LOADER_REGISTRY__ = {
     "LLaMAForCausalLM": llama_megatron_weight_loader,
     "MistralForCausalLM": mistral_megatron_weight_loader,
     'Qwen2ForCausalLM': qwen2_megatron_weight_loader,
+    'DeepseekV2ForCausalLM': deepseekv2_megatron_weight_loader,
 }
 
 

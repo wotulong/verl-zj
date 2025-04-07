@@ -151,7 +151,57 @@ def unwrap_model(model, module_instances=ALL_MODULE_WRAPPER_CLASSNAMES):
 
 
 from transformers import PretrainedConfig
+import torch
 
+def xavier_normal_init(tensor, k=None):
+    print("tensor:", tensor, "<======>k: ", k)
+    # Xavier 正态分布初始化
+    torch.nn.init.xavier_normal_(tensor)
+
+def scaled_normal_init(tensor, scale=0.01):
+    # 缩放正态分布初始化
+    torch.nn.init.normal_(tensor, mean=0.0, std=scale)
+def convert_deepseekv2_config(hf_config: PretrainedConfig, megatron_config) -> TransformerConfig:
+    print(f'megatron config {megatron_config}')
+    dt = PrecisionType.to_dtype(megatron_config.params_dtype)
+    print(f'pipeline_dtype=megatron_config {dt}')
+    overlap_p2p_comm = mpu.get_virtual_pipeline_model_parallel_world_size(
+    ) is not None and mpu.get_virtual_pipeline_model_parallel_world_size() > 1
+    batch_p2p_comm = False
+    transformer_config = TransformerConfig(
+        num_layers=hf_config.num_hidden_layers,
+        hidden_size=hf_config.hidden_size,
+        num_attention_heads=hf_config.num_attention_heads,
+        num_query_groups=hf_config.num_key_value_heads,
+        ffn_hidden_size=hf_config.intermediate_size,
+        num_moe_experts=hf_config.n_routed_experts + hf_config.n_shared_experts, # 暂时没加共享专家
+        moe_router_group_topk=hf_config.topk_group,
+        moe_router_topk=hf_config.num_experts_per_tok,
+        moe_shared_expert_intermediate_size=hf_config.moe_intermediate_size,
+        moe_router_num_groups=1,
+        moe_aux_loss_coeff=hf_config.aux_loss_alpha,
+        #    max_position_embeddings=hf_config.max_position_embeddings,
+        activation_func=F.silu,
+        normalization='RMSNorm',
+        #    rotary_percent=False, # default,
+        gated_linear_unit=True,  # for llama
+        use_cpu_initialization=True,
+        apply_residual_connection_post_layernorm=False,  # check what's this mean
+        add_bias_linear=False,
+        tensor_model_parallel_size=mpu.get_tensor_model_parallel_world_size(),
+        pipeline_model_parallel_size=mpu.get_pipeline_model_parallel_world_size(),
+        virtual_pipeline_model_parallel_size=mpu.get_virtual_pipeline_model_parallel_world_size(),
+        overlap_p2p_comm=overlap_p2p_comm,
+        batch_p2p_comm=batch_p2p_comm,
+        pipeline_dtype=dt,
+        params_dtype=dt,
+        sequence_parallel=True,
+        variable_seq_lengths=True,
+        masked_softmax_fusion=True,
+        moe_token_dispatcher_type="alltoall",
+        bf16=dt is torch.bfloat16)
+
+    return transformer_config
 
 def convert_config(hf_config: PretrainedConfig, megatron_config) -> TransformerConfig:
     print(f'megatron config {megatron_config}')
@@ -169,6 +219,7 @@ def convert_config(hf_config: PretrainedConfig, megatron_config) -> TransformerC
         #    max_position_embeddings=hf_config.max_position_embeddings,
         activation_func=F.silu,
         normalization='RMSNorm',
+        init_method=None,
         #    rotary_percent=False, # default,
         gated_linear_unit=True,  # for llama
         use_cpu_initialization=True,

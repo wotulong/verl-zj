@@ -286,7 +286,7 @@ def deepseekv2_dtensor_weight_loader(actor_weights: Dict, vllm_model: nn.Module)
                 weight_loader(
                     param,
                     local_loaded_weight.to(dtype=param.dtype),
-                    weight_name,
+                    name,#change by zsk
                     shard_id=shard_id,
                     expert_id=expert_id,
                 )

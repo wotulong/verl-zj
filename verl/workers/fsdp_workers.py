@@ -145,7 +145,7 @@ class ActorRolloutRefWorker(Worker):
                                override_model_config,
                                use_remove_padding=False,
                                enable_gradient_checkpointing=False,
-                               trust_remote_code=False,
+                               trust_remote_code=True,
                                use_liger=False,
                                role='actor'):
         from verl.utils.model import print_model_size, update_model_config, get_generation_config
@@ -204,7 +204,7 @@ class ActorRolloutRefWorker(Worker):
 
             if use_remove_padding or self.ulysses_sequence_parallel_size > 1:
                 from verl.models.transformers.monkey_patch import apply_monkey_patch
-                apply_monkey_patch(model=actor_module, ulysses_sp_size=self.ulysses_sequence_parallel_size)
+                apply_monkey_patch(model=actor_module)
 
             # Apply Liger kernel to the model if use_liger is set to True
             if use_liger:
@@ -292,7 +292,7 @@ class ActorRolloutRefWorker(Worker):
 
         return actor_module_fsdp, actor_optimizer, actor_lr_scheduler, actor_model_config
 
-    def _build_rollout(self, trust_remote_code=False):
+    def _build_rollout(self):
         from torch.distributed.device_mesh import init_device_mesh
         # TODO(sgm): support FSDP hybrid shard for larger model
         infer_tp = self.config.rollout.tensor_model_parallel_size
@@ -322,8 +322,7 @@ class ActorRolloutRefWorker(Worker):
                                       config=self.config.rollout,
                                       tokenizer=self.tokenizer,
                                       model_hf_config=self.actor_model_config,
-                                      device_mesh=rollout_device_mesh,
-                                      trust_remote_code=trust_remote_code)
+                                      device_mesh=rollout_device_mesh)
             else:
                 raise NotImplementedError("vllm_mode must be 'customized' or 'spmd'")
             log_gpu_memory_usage(f'After building {rollout_name} rollout', logger=None)
@@ -388,7 +387,7 @@ class ActorRolloutRefWorker(Worker):
                 override_model_config=override_model_config,
                 use_remove_padding=use_remove_padding,
                 enable_gradient_checkpointing=self.config.model.get('enable_gradient_checkpointing', False),
-                trust_remote_code=self.config.model.get('trust_remote_code', False),
+                trust_remote_code=self.config.model.get('trust_remote_code', True),
                 use_liger=self.config.model.get('use_liger', False),
                 role='actor')
 
@@ -408,8 +407,7 @@ class ActorRolloutRefWorker(Worker):
                                               actor_optimizer=self.actor_optimizer)
 
         if self._is_rollout:
-            self.rollout, self.rollout_sharding_manager = self._build_rollout(
-                trust_remote_code=self.config.model.get('trust_remote_code', False))
+            self.rollout, self.rollout_sharding_manager = self._build_rollout()
 
         if self._is_ref:
             self.ref_module_fsdp = self._build_model_optimizer(model_path=self.config.model.path,
@@ -418,7 +416,7 @@ class ActorRolloutRefWorker(Worker):
                                                                override_model_config=override_model_config,
                                                                use_remove_padding=use_remove_padding,
                                                                trust_remote_code=self.config.model.get(
-                                                                   'trust_remote_code', False),
+                                                                   'trust_remote_code', True),
                                                                use_liger=self.config.model.get('use_liger', False),
                                                                role='ref')[0]
             OmegaConf.set_struct(self.config.ref, True)
@@ -646,7 +644,6 @@ class CriticWorker(Worker):
         self._is_offload_optimizer = self.config.model.fsdp_config.optimizer_offload
 
         # normalize config
-        self.config.ppo_mini_batch_size *= self.config.rollout_n
         self.config.ppo_mini_batch_size //= (torch.distributed.get_world_size() // self.ulysses_sequence_parallel_size)
         if self.config.ppo_micro_batch_size is not None:
             self.config.ppo_micro_batch_size //= (torch.distributed.get_world_size() //
@@ -672,8 +669,8 @@ class CriticWorker(Worker):
         # using random initialized model from any architecture. May not be the same as Actor.
 
         tokenizer_path = copy_to_local(config.model.tokenizer_path)
-        self.tokenizer = hf_tokenizer(tokenizer_path, trust_remote_code=config.model.get('trust_remote_code', False))
-        self.processor = hf_processor(tokenizer_path, trust_remote_code=config.model.get('trust_remote_code', False))
+        self.tokenizer = hf_tokenizer(tokenizer_path, trust_remote_code=config.model.get('trust_remote_code', True))
+        self.processor = hf_processor(tokenizer_path, trust_remote_code=config.model.get('trust_remote_code', True))
 
         from omegaconf import OmegaConf
         override_config = OmegaConf.to_container(self.config.model.get('override_config', OmegaConf.create()))
@@ -712,7 +709,7 @@ class CriticWorker(Worker):
             use_remove_padding = config.model.get('use_remove_padding', False)
             if use_remove_padding or self.ulysses_sequence_parallel_size > 1:
                 from verl.models.transformers.monkey_patch import apply_monkey_patch
-                apply_monkey_patch(model=critic_module, ulysses_sp_size=self.ulysses_sequence_parallel_size)
+                apply_monkey_patch(model=critic_module)
 
             # some parameters may not in torch_dtype
             critic_module.to(torch_dtype)
@@ -948,10 +945,10 @@ class RewardModelWorker(Worker):
             self._do_switch_chat_template = True
             input_tokenizer_local_path = copy_to_local(config.model.input_tokenizer)
             self.input_tokenizer = hf_tokenizer(input_tokenizer_local_path,
-                                                trust_remote_code=config.model.get('trust_remote_code', False))
-            self.tokenizer = hf_tokenizer(local_path, trust_remote_code=config.model.get('trust_remote_code', False))
+                                                trust_remote_code=config.model.get('trust_remote_code', True))
+            self.tokenizer = hf_tokenizer(local_path, trust_remote_code=config.model.get('trust_remote_code', True))
 
-        trust_remote_code = config.model.get('trust_remote_code', False)
+        trust_remote_code = config.model.get('trust_remote_code', True)
         model_config = AutoConfig.from_pretrained(local_path, trust_remote_code=trust_remote_code)
         model_config.num_labels = 1
 
@@ -970,7 +967,7 @@ class RewardModelWorker(Worker):
 
             if config.model.get('use_remove_padding', False) or self.ulysses_sequence_parallel_size > 1:
                 from verl.models.transformers.monkey_patch import apply_monkey_patch
-                apply_monkey_patch(model=reward_module, ulysses_sp_size=self.ulysses_sequence_parallel_size)
+                apply_monkey_patch(model=reward_module)
 
             reward_module.to(torch.bfloat16)
 

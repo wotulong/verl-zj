@@ -132,7 +132,7 @@ class MegatronPPOActor(BasePPOActor):
         })
 
         config = get_model_config(self.actor_module[0])
-        print(config)
+        #print(config)
         config.finalize_model_grads_func = finalize_model_grads
 
     def _validate_config(self, config) -> None:
@@ -248,7 +248,9 @@ class MegatronPPOActor(BasePPOActor):
             batch_size = data.meta_info['micro_batch_size']
         else:
             batch_size = self.config.ppo_micro_batch_size_per_gpu
+        #print("data.batch---->:", data.batch)
         batches = split_dict_tensor_into_batches(data.batch, batch_size=batch_size)
+        #print("batches+++++++++>>:", batches)
         # compute input shapes for pp stages
         input_shapes = compute_transformers_input_shapes(
             batches,
@@ -277,7 +279,6 @@ class MegatronPPOActor(BasePPOActor):
 
             clip_ratio = meta_info['clip_ratio']
             entropy_coeff = meta_info['entropy_coeff']
-            clip_ratio_c = meta_info['clip_ratio_c']
 
             # compute policy loss
             logits = output.logits
@@ -285,12 +286,11 @@ class MegatronPPOActor(BasePPOActor):
             logits_back = logits.clone()
             log_prob = vocab_parallel_log_probs_from_logits(logits, responses)
             logits = logits_back
-            pg_loss, pg_clipfrac, ppo_kl, pg_clipfrac_lower = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
-                                                                                             log_prob=log_prob,
-                                                                                             advantages=advantages,
-                                                                                             eos_mask=response_mask,
-                                                                                             cliprange=clip_ratio,
-                                                                                             clip_ratio_c=clip_ratio_c)
+            pg_loss, pg_clipfrac, ppo_kl = core_algos.compute_policy_loss(old_log_prob=old_log_prob,
+                                                                          log_prob=log_prob,
+                                                                          advantages=advantages,
+                                                                          eos_mask=response_mask,
+                                                                          cliprange=clip_ratio)
             entropy_loss = vocab_parallel_compute_entropy_loss(logits, eos_mask=response_mask)
             policy_loss = pg_loss - entropy_loss * entropy_coeff
 
@@ -312,14 +312,14 @@ class MegatronPPOActor(BasePPOActor):
                 'actor/entropy_loss': entropy_loss.detach().item(),
                 'actor/pg_loss': pg_loss.detach().item(),
                 'actor/pg_clipfrac': pg_clipfrac.detach().item(),
-                'actor/ppo_kl': ppo_kl.detach().item(),
-                'actor/pg_clipfrac_lower': pg_clipfrac_lower.detach().item()
+                'actor/ppo_kl': ppo_kl.detach().item()
             }
             append_to_dict(stats, metrics)
             return policy_loss, stats
 
         def forward_step(batch_iter, model):
             batch = next(batch_iter)
+            #print("forward step batch:--------------------->>>", batch)
             input_ids = batch['input_ids']
             attention_mask = batch['attention_mask']
             position_ids = batch['position_ids']
@@ -327,20 +327,21 @@ class MegatronPPOActor(BasePPOActor):
             if forward_only:
                 meta_info = None
             else:
-                clip_ratio_c = self.config.get('clip_ratio_c', 3.0)
-                meta_info = {
-                    'clip_ratio': self.config.clip_ratio,
-                    'entropy_coeff': self.config.entropy_coeff,
-                    'clip_ratio_c': clip_ratio_c
-                }
+                meta_info = {'clip_ratio': self.config.clip_ratio, 'entropy_coeff': self.config.entropy_coeff}
             return output, partial(loss_func, data=batch, meta_info=meta_info)
 
         # batch should be a list of batches inside micro-batches
+
         batch_generator = make_batch_generator(batches, vpp_size=len(self.actor_module))
 
         # TODO: we may use the new schedule instead
         # for flash-attn: (seq_len, batch_size, hidden_size) = (mbs*seq_len, 1, hidden_size)
         if mpu.get_pipeline_model_parallel_world_size() > 1:
+            #print("batches:", batches)
+            #print("chank in of batch:", batches[""])
+            #batch_generator = list(batches)
+            batch_generator = [iter(batches)]
+            #print("pp data input============:", next(batch_generator))
             losses_reduced = forward_backward_func(
                 forward_step_func=forward_step,
                 data_iterator=batch_generator,

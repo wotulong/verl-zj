@@ -168,6 +168,15 @@ class MegatronLoader(BaseModelLoader):
                 model = _initialize_model(model_config, self.load_config, lora_config, cache_config, scheduler_config)
 
             # TODO(sgm): This is a hack, we need to register the load_weight() func for each model in vllm
+            # if torch.distributed.get_rank() == 0:
+            #     print("=====>>> actor model in load model:")
+            #     if isinstance(actor_model, nn.Module):
+            #         actor_weights=dict(actor_model.named_parameters(remove_duplicate=False))
+            #     else:
+            #         actor_weights=actor_model
+            #     for name in actor_weights:
+            #         print(f"param:{name}")
+                    
             if isinstance(actor_model, nn.Module):
                 load_megatron_weights(actor_weights=dict(actor_model.named_parameters(remove_duplicate=False)),
                                       vllm_model=model)

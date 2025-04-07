@@ -25,8 +25,6 @@ import torch
 import torch.utils.checkpoint
 from megatron.core import tensor_parallel, parallel_state
 from megatron.core import ModelParallelConfig
-from megatron.core import mpu
-
 from torch import nn
 from transformers.modeling_outputs import BaseModelOutputWithPast
 from transformers.models.qwen2.configuration_qwen2 import Qwen2Config
@@ -432,26 +430,29 @@ class ParallelQwen2ModelRmPadPP(nn.Module):
         else:
             self.embed_tokens = None
 
-        pp_rank = mpu.get_pipeline_model_parallel_rank()
+        # pp_rank = megatron_config.pipeline_model_parallel_rank
         pp_size = megatron_config.pipeline_model_parallel_size
         self.num_layer_per_pp = config.num_hidden_layers // pp_size
         vpp_size = megatron_config.virtual_pipeline_model_parallel_size
-        vpp_rank = mpu.get_virtual_pipeline_model_parallel_rank()
 
         if vpp_size is not None:
             self.num_layer_vpp_chunk = self.num_layer_per_pp // vpp_size
             self.num_layer_this_model = self.num_layer_vpp_chunk
-            offset = vpp_rank * (
-                    config.num_hidden_layers // vpp_size) + \
-                        (pp_rank * self.num_layer_vpp_chunk)
+            # vpp_rank = megatron_config.virtual_pipeline_model_parallel_rank
+            # self.offset = vpp_rank * (
+            #         config.num_hidden_layers // megatron_config.virtual_pipeline_model_parallel_size) + \
+            #             (megatron_config.pipeline_model_parallel_rank * self.num_layer_vpp_chunk)
         else:
             self.num_layer_this_model = self.num_layer_per_pp
-            offset = pp_rank * self.num_layer_per_pp
+            # self.offset = pp_rank * self.num_layer_per_pp
 
-        self.layers = nn.ModuleList()
+        layers = []
         for i in range(self.num_layer_this_model):
-            layer = ParallelQwen2DecoderLayerRmPad(config, megatron_config, layer_idx=i + offset)
-            self.layers.add_module(f'{i}', layer)
+            layer = ParallelQwen2DecoderLayerRmPad(config, megatron_config)
+            # setattr(layer, 'hidden_layer_index', self.offset + i)
+            layers.append(layer)
+
+        self.layers = nn.ModuleList(layers)
 
         if post_process:
             self.norm = ParallelQwen2RMSNorm(config, megatron_config)

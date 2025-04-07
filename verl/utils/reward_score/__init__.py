@@ -42,7 +42,9 @@ def _default_compute_score(data_source, solution_str, ground_truth, extra_info=N
         from . import geo3k
         res = geo3k.compute_score(solution_str, ground_truth)
     else:
-        raise NotImplementedError
+        from . import gsm8k
+        res = gsm8k.compute_score(solution_str, ground_truth)
+        #raise NotImplementedError
 
     if isinstance(res, (int, float, bool)):
         return float(res)

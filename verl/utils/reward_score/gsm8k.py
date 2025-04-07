@@ -15,16 +15,27 @@
 import re
 
 
+def format_reward(predict_str: str) -> float:
+    # pattern = re.compile(r'<think>.*</think>.*\\boxed\{.*\}.*', re.DOTALL)
+    pattern = re.compile(r'<think>.*</think>.*####.*', re.DOTALL)
+    match_result = re.fullmatch(pattern, predict_str)
+    return 1.0 if match_result else 0.0
+
 def extract_solution(solution_str, method='strict'):
     assert method in ['strict', 'flexible']
+
+    
+    # print(f'solution_str:{solution_str}')
 
     if method == 'strict':
         # this also tests the formatting of the model
         solution = re.search("#### (\\-?[0-9\\.\\,]+)", solution_str)
+        # print(f'solution:{solution}')
         if solution is None:
             final_answer = None
         else:
             final_answer = solution.group(0)
+            # print(f'final_answer:{final_answer}')
             final_answer = final_answer.split('#### ')[1].replace(',', '').replace('$', '')
     elif method == 'flexible':
         answer = re.findall("(\\-?[0-9\\.\\,]+)", solution_str)
@@ -53,11 +64,17 @@ def compute_score(solution_str, ground_truth, method='strict', format_score=0., 
         format_score: the score for the format
         score: the score for the correct answer
     """
+    solution_str = solution_str.replace('<｜end▁of▁sentence｜>', '').strip()
     answer = extract_solution(solution_str=solution_str, method=method)
+    format_res = format_reward(solution_str)
+
     if answer is None:
-        return 0
+        return 0.1 * format_res
     else:
         if answer == ground_truth:
-            return score
+            return 0.9 * score + 0.1 * format_res
         else:
-            return format_score
+            return 0.1 * format_score
+
+
+

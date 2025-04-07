@@ -121,17 +121,22 @@ class FSDPSFTTrainer(object):
     def _build_dataloader(self):
         config = self.config
         # build dataset
-        from verl.utils.import_utils import load_extern_type
-        if config.data.custom_cls.get("path", None):
-            dataset_cls = load_extern_type(config.data.custom_cls.path, config.data.custom_cls.name)
-        else:
-            dataset_cls = SFTDataset
-        self.train_dataset = dataset_cls(parquet_files=config.data.train_files,
-                                         tokenizer=self.tokenizer,
-                                         config=config.data)
-        self.val_dataset = dataset_cls(parquet_files=config.data.val_files,
-                                       tokenizer=self.tokenizer,
-                                       config=config.data)
+        self.train_dataset = SFTDataset(parquet_files=config.data.train_files,
+                                        tokenizer=self.tokenizer,
+                                        prompt_key=config.data.prompt_key,
+                                        prompt_dict_keys=config.data.get('prompt_dict_keys', None),
+                                        response_key=config.data.response_key,
+                                        response_dict_keys=config.data.get('response_dict_keys', None),
+                                        max_length=config.data.max_length,
+                                        truncation=config.data.truncation)
+        self.val_dataset = SFTDataset(parquet_files=config.data.val_files,
+                                      tokenizer=self.tokenizer,
+                                      prompt_key=config.data.prompt_key,
+                                      prompt_dict_keys=config.data.get('prompt_dict_keys', None),
+                                      response_key=config.data.response_key,
+                                      response_dict_keys=config.data.get('response_dict_keys', None),
+                                      max_length=config.data.max_length,
+                                      truncation=config.data.truncation)
 
         # build dataloader
         # Use data parallel rank and size instead of global rank and world size
@@ -205,7 +210,7 @@ class FSDPSFTTrainer(object):
 
             if self.use_remove_padding or self.config.ulysses_sequence_parallel_size > 1:
                 from verl.models.transformers.monkey_patch import apply_monkey_patch
-                apply_monkey_patch(model=self.model, ulysses_sp_size=self.config.ulysses_sequence_parallel_size)
+                apply_monkey_patch(model=self.model)
 
             # Apply Liger kernel if use_liger is enabled
             if self.config.model.get('use_liger', False):

@@ -25,6 +25,7 @@ from transformers import AutoConfig, AutoModelForCausalLM, PretrainedConfig, Mis
 from verl.models.registry import ModelRegistry
 
 
+
 class LambdaLayer(nn.Module):
 
     def __init__(self, fn):
@@ -194,6 +195,13 @@ def create_random_mask(input_ids: torch.Tensor,
 def compute_position_id_with_mask(mask):
     return torch.clip(torch.cumsum(mask, dim=-1) - 1, min=0, max=None)
 
+import os
+
+def get_model_type_from_env():
+    """
+    Get model_type from an environment variable.
+    """
+    return os.getenv("MODEL_TYPE", "deepseek_v2")
 
 def normalize_pp_vpp_params(params, num_hidden_layers, layer_name='layers'):
     """
@@ -202,6 +210,7 @@ def normalize_pp_vpp_params(params, num_hidden_layers, layer_name='layers'):
 
     params: List[List[Dict[str, param]]]
         params contains a list of pp, with a list of vpp named_parameters in each vpp chunk.
+    num_hidden_layers:27
     output: Dict[str, param]
 
     """
@@ -210,16 +219,31 @@ def normalize_pp_vpp_params(params, num_hidden_layers, layer_name='layers'):
         """
         Transform the model name in each model_chunk in each pp stage into the name in inference engine
         """
-        if vpp_size > 1:
-            # print(f'try to bind vpp params to inference engine...')
-            layers_per_pp = num_layers // pp_size
-            layers_per_vpp = layers_per_pp // vpp_size
-            pp_offset = layers_per_vpp * pp_rank
-            vpp_offset = (layers_per_vpp * pp_size) * vpp_rank
-            layer_offset = pp_offset + vpp_offset
+        from verl.models.deepseekv2.megatron.checkpoint_utils.model_pp_map import MODEL_PP_SCHEDULE
+        model_type = "deepseek_v2"#get_model_type_from_env()
+
+        if model_type in MODEL_PP_SCHEDULE:
+            # print(f'调用对了')
+            model_pp_schedule = MODEL_PP_SCHEDULE[model_type]
+            layers_pp = [sum(vp) for vp in model_pp_schedule]
+            layer_offset = sum(layers_pp[:pp_rank]) + sum(model_pp_schedule[pp_rank][:vpp_rank])
+            # print(f"name:{name}, pp_rank:{pp_rank}, vpp_rank:{vpp_rank}, architecture:{architecture}， layer_offset：{layer_offset}")
         else:
-            layers_per_pp = num_layers // pp_size
-            layer_offset = layers_per_pp * pp_rank
+            if vpp_size > 1:
+                # print(f'try to bind vpp params to inference engine...')
+                layers_per_pp = num_layers // pp_size
+                layers_per_vpp = layers_per_pp // vpp_size
+                pp_offset = layers_per_vpp * pp_rank
+                vpp_offset = (layers_per_vpp * pp_size) * vpp_rank
+                layer_offset = pp_offset + vpp_offset
+            else:
+                layers_per_pp = num_layers // pp_size
+            #     layer_offset = layers_per_pp * pp_rank
+            # from verl.models.deepseekv2.megatron.checkpoint_utils.model_pp_map import deepseekv2_lite_schedule
+            # model_pp_schedule = deepseekv2_lite_schedule()
+            # layers_pp = [sum(vp) for vp in model_pp_schedule]
+            # layer_offset = sum(layers_pp[:pp_rank]) + sum(model_pp_schedule[pp_rank][:vpp_rank])
+            # print(f"name:{name}, pp_rank:{pp_rank}, vpp_rank:{vpp_rank}, architecture:{architecture}， layer_offset：{layer_offset}")
 
         if layer_name in name:  # belong to an intermediate layer
             split_name = name.split('.')
@@ -235,9 +259,11 @@ def normalize_pp_vpp_params(params, num_hidden_layers, layer_name='layers'):
             split_name[layer_num_idx] = str(int(split_name[layer_num_idx]) + layer_offset)
             name = '.'.join(split_name)  # weight name in inference_tp_model
         return name
-
+    
     pp_size = len(params)
+
     normalized_name_to_param = {}
+
     for pp_rank in range(len(params)):
         vpp_size = len(params[pp_rank])
         for vpp_rank in range(vpp_size):
@@ -282,7 +308,8 @@ def load_megatron_model_weights(config,
                                 parallel_model,
                                 params_dtype,
                                 is_value_model=False,
-                                local_cache_path='~/.cache/verl/rlhf'):
+                                local_cache_path='~/.cache/verl/rlhf',
+                                resume_path=None):
     assert hasattr(model_config, "architectures"), "architectures cannot be empty when load weight!"
     architectures = getattr(model_config, "architectures", [])
     local_cache_path = os.path.expanduser(local_cache_path)
@@ -293,34 +320,44 @@ def load_megatron_model_weights(config,
         local_model_path = copy_to_local(src=config.model.path, cache_dir=local_cache_path)
         print('finish download')
     else:
-        local_model_path = config.model.path
-        print(f"load from local dir {local_model_path}")
+        if resume_path is not None:
+            local_model_path = resume_path
+            print(f"resume, load from local dir {local_model_path}")
+        else:
+            local_model_path = config.model.path
+            print(f"load from local dir {local_model_path}")
 
     # TODO: to find a better way to load mistral7b-rm lm_head
     from verl.utils.fsdp_utils import get_init_weight_context_manager
     init_context = get_init_weight_context_manager(use_meta_tensor=not model_config.tie_word_embeddings)
-    with init_context(), warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        if 'mistral7b-rm' in config.model.path:
-            model = MistralForSequenceClassification.from_pretrained(
-                local_model_path, device_map="auto", low_cpu_mem_usage=True)  # use score head instead of lm_head
-            state_dict = model.state_dict()
-            state_dict['lm_head.weight'] = state_dict['score.weight']
-            state_dict['model.embed_tokens.weight'] = state_dict[
-                'model.embed_tokens.weight'][:32000]  # workaround, 32001 -> 32000
-            is_value_model = True
-        else:
-            model = AutoModelForCausalLM.from_pretrained(local_model_path,
-                                                         torch_dtype="auto",
-                                                         device_map="auto",
-                                                         low_cpu_mem_usage=True)
-            state_dict = model.state_dict()
+    if resume_path is None:
+        with init_context(), warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            if 'mistral7b-rm' in config.model.path:
+                model = MistralForSequenceClassification.from_pretrained(
+                    local_model_path)  # use score head instead of lm_head
+                state_dict = model.state_dict()
+                state_dict['lm_head.weight'] = state_dict['score.weight']
+                state_dict['model.embed_tokens.weight'] = state_dict[
+                    'model.embed_tokens.weight'][:32000]  # workaround, 32001 -> 32000
+                is_value_model = True
+            else:
+                model = AutoModelForCausalLM.from_pretrained(local_model_path, torch_dtype="auto", trust_remote_code=True)
+                state_dict = model.state_dict()
 
     from verl.models.weight_loader_registry import get_weight_loader
     print(f'before weight loader: architectures = {architectures}...')
     for arch in architectures:
         print(f'call weight loader arch = {arch}, model config = {model.config}')
         weight_loader = get_weight_loader(arch)
+
+        # zsk print
+        print("\n\n\n=============:params:")
+        with open("./test_state_dict.txt", 'wt', encoding='utf-8') as f:
+            for name in state_dict:
+                tmp_s = f"name: {name}, param shape: {state_dict[name].shape}\n"
+                f.write(tmp_s)
+
         weight_loader(state_dict=state_dict,
                       wrapped_models=parallel_model,
                       config=model.config,
