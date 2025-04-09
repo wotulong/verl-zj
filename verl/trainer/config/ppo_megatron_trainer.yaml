@@ -66,6 +66,8 @@ actor_rollout_ref:
     log_prob_micro_batch_size_per_gpu: null
   rollout:
     name: vllm
+    trust_remote_code: True
+    enable_expert_parallel: False
     temperature: 1.0
     top_k: -1 # 0 for hf rollout, -1 for vllm rollout
     top_p: 1
