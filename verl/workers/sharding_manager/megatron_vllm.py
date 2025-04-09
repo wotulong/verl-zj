@@ -19,14 +19,14 @@ import importlib
 from packaging.version import Version
 import torch
 import torch.distributed as dist
-
+from verl.third_party.vllm import vllm_version
 from torch import nn
 
 from megatron.core import parallel_state as mpu
 from megatron.core import DistributedDataParallel as LocalDDP
 from megatron.core.transformer.module import Float16Module
 from torch.nn.parallel.distributed import DistributedDataParallel as torchDDP
-from verl.utils.megatron_utils import get_model, unwrap_model
+from verl.utils.megatron_utils import get_model, unwrap_model, print_rank_0
 from verl.utils.memory_buffer import (
     build_memory_buffer,
     build_memory_reference_from_module,
@@ -340,25 +340,52 @@ class MegatronVLLMShardingManager(BaseShardingManager):
         # here the params are in train tp format. we iterate params and all-gather
         # TODO(zhangchi.usc1992) We can consider copy non-tp weight to another infer buffer.
         # In this way, all the params in the original memory_buffers and can be offload.
-        micro_dp_size = get_micro_data_parallel_world_size()
-        micro_dp_group = get_micro_data_parallel_group()
+        # micro_dp_size = get_micro_data_parallel_world_size()
+        # micro_dp_group = get_micro_data_parallel_group()
+        # if micro_dp_size <= 1:
+        #     return
 
-        if micro_dp_size <= 1:
+        # origin_params = {}
+        # for name in params.keys():
+        #     param = params[name]
+        #     if tp_utils.is_tensor_parallel_param(param):
+        #         # allocate a new tensor with proper size
+        #         infer_params = [torch.empty_like(param) for _ in range(micro_dp_size)]
+        #         torch.distributed.all_gather(infer_params, param, group=micro_dp_group)
+        #         infer_params = self.default_tp_concat_fn(name, param, infer_params, self.model_config)
+        #         # replace with original param
+        #         params[name] = infer_params
+        #     origin_params[name] = param
+
+        # return origin_params
+
+        tp_size = mpu.get_tensor_model_parallel_world_size()
+        tp_group = mpu.get_tensor_model_parallel_group()
+        if tp_size <= 1:
             return
 
         origin_params = {}
-        for name in params.keys():
+        origin_names = list(params.keys())
+        for name in origin_names:
             param = params[name]
             if tp_utils.is_tensor_parallel_param(param):
                 # allocate a new tensor with proper size
-                infer_params = [torch.empty_like(param) for _ in range(micro_dp_size)]
-                torch.distributed.all_gather(infer_params, param, group=micro_dp_group)
+                infer_params = [torch.empty_like(param) for _ in range(tp_size)]
+                torch.distributed.all_gather(infer_params, param, group=tp_group)
                 infer_params = self.default_tp_concat_fn(name, param, infer_params, self.model_config)
                 # replace with original param
                 params[name] = infer_params
+                if 'gate_up_proj' in name:
+                    gate_name = name.replace('gate_up_proj', 'gate_proj')
+                    up_name = name.replace('gate_up_proj', 'up_proj')
+                    split_point = infer_params.shape[0] // 2
+                    params[gate_name] = infer_params[:split_point, :]
+                    params[up_name] = infer_params[split_point:, :]
+                    params.pop(name)
             origin_params[name] = param
-
         return origin_params
+
+
 
     def __enter__(self):
         # create a new cuda space for parameters not in this pp rank
@@ -373,7 +400,16 @@ class MegatronVLLMShardingManager(BaseShardingManager):
                                               num_hidden_layers=self.model_config.num_hidden_layers,
                                               layer_name='layers')
         self.origin_params = self._post_process_params(self.params)
-        self.inference_engine.sync_model_weights(self.params, load_format='megatron')
+        self.inference_engine.wake_up()
+        model = self.inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.model
+        # for k, v in self.params.items():
+        #     print_rank_0("{}_{}".format(k, v.shape))
+        # print_rank_0('-----------------------------------------')
+        # print_rank_0(dict(model.named_parameters()).keys())
+        # print_rank_0('-----------------------------------------')
+        loaded_params = model.load_weights(
+            ((name, param) for name, param in self.params.items()))
+        # self.inference_engine.sync_model_weights(self.params, load_format='megatron')
 
     def __exit__(self, exc_type, exc_value, traceback):
         # offload parameters doesn't belong to this pp rank
@@ -386,7 +422,10 @@ class MegatronVLLMShardingManager(BaseShardingManager):
                 self.params[name] = self.origin_params[name]
 
         # self.inference_engine.sync_model_weights(params)
-        self.inference_engine.offload_model_weights()
+        if vllm_version in ('0.4.2', '0.5.4', '0.6.3'):
+            self.inference_engine.offload_model_weights()
+        else:
+            self.inference_engine.sleep(level=1)
 
         self.module.train()
 
