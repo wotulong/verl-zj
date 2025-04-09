@@ -26,6 +26,7 @@ from verl import DataProto
 from verl.utils.torch_functional import (broadcast_dict_tensor, allgather_dict_tensors)
 from verl.protocol import all_gather_data_proto
 from verl.utils.debug import log_gpu_memory_usage
+from verl.utils.megatron_utils import print_rank_0
 from verl.third_party.vllm import vllm_version
 
 from .base import BaseShardingManager
@@ -94,6 +95,11 @@ class FSDPVLLMShardingManager(BaseShardingManager):
             self.inference_engine.wake_up()
             world_size = torch.distributed.get_world_size()
             model = self.inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.model
+            # for k, v in params.items():
+            #     print_rank_0("{}_{}".format(k, v.full_tensor().shape))
+            # print_rank_0('-----------------------------------------')
+            # print_rank_0(dict(model.named_parameters()).keys())
+            # print_rank_0('-----------------------------------------')
             loaded_params = model.load_weights(
                 ((name, param.full_tensor() if world_size != 1 else param) for name, param in params.items()))
             logger.info(f"vLLM load wegiths, loaded_params: {len(loaded_params)}")
