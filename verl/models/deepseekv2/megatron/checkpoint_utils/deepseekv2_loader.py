@@ -39,7 +39,7 @@ from tqdm import tqdm
 #  其他
 #     param: model.layers.0.input_layernorm.weight    shape: torch.Size([2048])
 #     param: model.layers.0.post_attention_layernorm.weight   shape: torch.Size([2048])
-## 1-17层有专家及共享专家
+## 1-26层有专家及共享专家
 #   expert层：
 #   attention层：
 #     param: model.layers.1.self_attn.q_proj.weight   shape: torch.Size([3072, 2048])
@@ -56,6 +56,7 @@ from tqdm import tqdm
 #     param: model.layers.1.mlp.shared_experts.up_proj.weight     shape: torch.Size([2816, 2048])
 #     param: model.layers.1.mlp.shared_experts.down_proj.weight   shape: torch.Size([2048, 2816])
 #   其他
+#     param: model.layers.1.mlp.gate.weight   shape: torch.Size([64, 2048])
 #     param: model.layers.1.input_layernorm.weight    shape: torch.Size([2048])
 #     param: model.layers.1.post_attention_layernorm.weight   shape: torch.Size([2048])
 # other:
@@ -533,6 +534,7 @@ def load_state_dict_to_megatron_deepseekv2(state_dict,
                     sync_layer.mlp.gate.weight if dst_pp_rank == pp_rank else None,
                     f"{layer_name}.mlp.gate.weight",
                 )
+
                 # 共享专家
                 _broadcast_tp_shard_tensor_gate_up_moe(
                     sync_layer.mlp.shared_experts.gate_up_proj.weight if dst_pp_rank == pp_rank else None,
@@ -555,7 +557,7 @@ def load_state_dict_to_megatron_deepseekv2(state_dict,
             "model.norm.weight",
         )
 
-        if tie_word_embeddings:
+        if False:#tie_word_embeddings:
             print_rank_0("tie_word_embeddings skip load lm_head")
         else:
             print_rank_0("loading lm_head...")

@@ -212,6 +212,264 @@ class ParallelDeepseekV2ForCausalLM(nn.Module):
             attentions=None,
         )
 
+
+# add by zsk
+class ParallelDeepseekV2ModelPP(nn.Module):
+    """
+    Transformer decoder consisting of *config.num_hidden_layers* layers. Each layer is a [`DeepseekV2DecoderLayer`]
+    This model definition supports pipeline parallelism. To support pp and vpp,
+    - This model only contains layer in this pp stage and vpp chunk
+    - When calling get_model in Megatron, this rank will instantiate all the vpp chunks in this pp.
+    Args:
+        config: DeepseekV2Config
+    """
+
+    def __init__(self, config: DeepseekV2Config, megatron_config: ModelParallelConfig, pre_process, post_process):
+        super().__init__()
+        self.config: TransformerConfig = convert_deepseekv2_config(config, megatron_config)
+        self.padding_idx = config.pad_token_id
+        self.vocab_size = config.vocab_size
+        self.pre_process = pre_process
+        self.post_process = post_process
+        self.megatron_config = megatron_config
+        embedding_kwargs = tp_utils.get_default_kwargs_for_parallel_embedding()
+
+        if megatron_config is not None:
+            assert embedding_kwargs.get('config', False), 'must have ModelParallelConfig'
+            tp_utils.update_kwargs_with_config(embedding_kwargs, self.megatron_config)
+
+        if pre_process:
+            self.embed_tokens = tensor_parallel.VocabParallelEmbedding(num_embeddings=config.vocab_size,
+                                                                       embedding_dim=config.hidden_size,
+                                                                       **embedding_kwargs)
+        else:
+            self.embed_tokens = None
+
+        pp_rank = mpu.get_pipeline_model_parallel_rank()
+        vp_rank = mpu.get_virtual_pipeline_model_parallel_rank()
+        vpp_size = mpu.get_virtual_pipeline_model_parallel_world_size()
+        pp_schedule = deepseekv2_lite_schedule() # [[6],[6],[7],[8]]
+
+        # 确保不出现None
+        vp_rank = 0 if vp_rank is None else vp_rank
+
+        if vpp_size is not None:
+
+            self.num_layer_vpp_chunk = pp_schedule[pp_rank][vp_rank]
+            self.num_layer_this_model = self.num_layer_vpp_chunk
+            # vpp_rank = megatron_config.virtual_pipeline_model_parallel_rank
+            # self.offset = vpp_rank * (
+            #         config.num_hidden_layers // megatron_config.virtual_pipeline_model_parallel_size) + \
+            #             (megatron_config.pipeline_model_parallel_rank * self.num_layer_vpp_chunk)
+        else:
+            self.num_layer_this_model = pp_schedule[pp_rank][0]
+
+        layers = []
+        layers_pp = [sum(vp) for vp in pp_schedule]
+        layer_offset = sum(layers_pp[:pp_rank]) + sum(pp_schedule[pp_rank][:vp_rank])
+
+        for i in range(self.num_layer_this_model):
+            layer = ParallelDeepseekV2DecoderLayer(config, megatron_config, i + layer_offset)
+            # setattr(layer, 'hidden_layer_index', self.offset + i)
+            layers.append(layer)
+
+        self.layers = nn.ModuleList(layers)
+
+        if post_process:
+            self.norm = ParallelDeepseekV2RMSNorm(config.hidden_size, megatron_config)
+        else:
+            self.norm = None
+    
+    def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds):
+        # create causal mask
+        # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+        combined_attention_mask = None
+        if input_shape[-1] > 1:
+            combined_attention_mask = _make_causal_mask(
+                input_shape,
+                inputs_embeds.dtype,
+                device=inputs_embeds.device,
+            )
+
+        if attention_mask is not None:
+            # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
+            expanded_attn_mask = _expand_mask(attention_mask, inputs_embeds.dtype,
+                                              tgt_len=input_shape[-1]).to(inputs_embeds.device)
+            combined_attention_mask = (expanded_attn_mask if combined_attention_mask is None else expanded_attn_mask +
+                                       combined_attention_mask)
+
+        return combined_attention_mask
+
+    def set_input_tensor(self, input_tensor):
+        """Set input tensor to be used instead of forward()'s input.
+
+        When doing pipeline parallelism the input from the previous
+        stage comes from communication, not from the input, so the
+        model's forward_step_func won't have it. This function is thus
+        used by internal code to bypass the input provided by the
+        forward_step_func"""
+        self.input_tensor = input_tensor
+
+    def forward(self,
+                input_ids: torch.LongTensor = None,
+                attention_mask: Optional[torch.Tensor] = None,
+                position_ids: Optional[torch.LongTensor] = None,
+                ) -> Union[Tuple, BaseModelOutputWithPast]:
+        """
+
+        Args:
+            input_ids: input ids. shape (1, totol_nnz)
+            position_ids: position ids. shape (batch_size, seq_length)
+
+        Returns:
+
+        """
+        if self.pre_process:
+            batch_size, seq_length = input_ids.shape
+            inputs_embeds = self.embed_tokens(input_ids)  # (1, total_nnz) -> (1, total_nnz, hidden_size)
+            attention_mask = self._prepare_decoder_attention_mask(attention_mask, (batch_size, seq_length), inputs_embeds)
+
+            # vocab parallel embedding will not do sequence parallel reduce-scatter in open source megatron
+            # so need to deal with it by handle here:
+            # (1, total_nnz, hidden_size) -> (total_nnz, 1, hidden_size) -> (total_nnz // sp, 1, hidden_size)
+            # inputs_embeds = inputs_embeds.transpose(0, 1)
+            if self.megatron_config.sequence_parallel:
+                print("============> using sequence parallel...")
+                inputs_embeds = tensor_parallel.scatter_to_sequence_parallel_region(inputs_embeds)
+
+            hidden_states = inputs_embeds
+        else:
+            # self.hidden_states should be passed by Megatron
+            hidden_states = self.input_tensor
+
+        # if torch.distributed.get_rank() == 0:
+        #     print(f'input_ids.shape:{input_ids.shape}')
+        #     print(f'hidden_states.shape:{hidden_states.shape}')
+
+        if len(attention_mask.shape) == 2:
+            batch_size, seq_length = input_ids.shape
+            attention_mask = self._prepare_decoder_attention_mask(attention_mask, (batch_size, seq_length), hidden_states)
+            
+        for idx, decoder_layer in enumerate(self.layers):
+            layer_outputs = decoder_layer(hidden_states,
+                                          position_ids=position_ids,
+                                          attention_mask=attention_mask
+                                          )
+
+            hidden_states = layer_outputs
+
+        if self.post_process:
+            hidden_states = self.norm(hidden_states)
+
+        return hidden_states
+
+
+# add by zsk
+class ParallelDeepseekV2ForCausalLMPP(nn.Module):
+
+    def __init__(self, config: DeepseekV2Config, megatron_config: ModelParallelConfig, pre_process, post_process,
+                 share_embeddings_and_output_weights):
+        super().__init__()
+        self.config: TransformerConfig = convert_deepseekv2_config(config, megatron_config)
+        self.megatron_config = megatron_config
+        self.model = ParallelDeepseekV2ModelPP(config,
+                                               megatron_config=megatron_config,
+                                               pre_process=pre_process,
+                                               post_process=post_process)
+        assert share_embeddings_and_output_weights == False, "dp2-lite not support share_embeddings_and_output_weights now!"
+        self.share_embeddings_and_output_weights = share_embeddings_and_output_weights
+        self.vocab_size = config.vocab_size
+        self.pre_process = pre_process
+        self.post_process = post_process
+        if post_process:
+            self._init_head(config)
+
+    def set_input_tensor(self, input_tensor):
+        """Set input tensor to be used instead of forward()'s input.
+
+        When doing pipeline parallelism the input from the previous
+        stage comes from communication, not from the input, so the
+        model's forward_step_func won't have it. This function is thus
+        used by internal code to bypass the input provided by the
+        forward_step_func"""
+        assert len(input_tensor) == 1
+        self.model.set_input_tensor(input_tensor[0])
+
+    def _init_head(self, config):
+        column_kwargs = tp_utils.get_default_kwargs_for_column_parallel_linear()
+        if self.megatron_config is not None:
+            assert column_kwargs.get('config', False), 'must have ModelParallelConfig'
+            tp_utils.update_kwargs_with_config(column_kwargs, self.megatron_config)
+
+        self.lm_head = tensor_parallel.ColumnParallelLinear(input_size=config.hidden_size,
+                                                            output_size=config.vocab_size,
+                                                            bias=False,
+                                                            gather_output=False,
+                                                            skip_bias_add=False,
+                                                            **column_kwargs)
+
+    def _forward_head(self, hidden_states):
+        # all_gather from sequence parallel region is performed inside lm_head
+        # logits shape before forward_head hidden_states.shape: [4, 32, 4096]
+        logits = self.lm_head(hidden_states)[0]
+        # logits shape after forward_head logits.shape: [8, 32, 8]
+        logits = logits.float()  # (total_nnz_padded, 1, vocab_size // tp)
+        return logits
+
+    def forward(
+
+        self,
+        # original input
+        *,
+        input_ids: torch.LongTensor = None,
+        attention_mask: Optional[torch.Tensor] = None,
+        position_ids: Optional[torch.LongTensor] = None,
+    ) -> Union[Tuple, CausalLMOutputWithPast]:
+        r"""
+        Args:
+            labels (`torch.LongTensor` of shape `(batch_size, sequence_length)`, *optional*):
+                Labels for computing the masked language modeling loss. Indices should either be in `[0, ...,
+                config.vocab_size]` or -100 (see `input_ids` docstring). Tokens with indices set to `-100` are ignored
+                (masked), the loss is only computed for the tokens with labels in `[0, ..., config.vocab_size]`.
+
+        Returns:
+        ```"""
+        # zsk testing
+        # new_input_ids = torch.ones_like(input_ids)
+        # input_ids = new_input_ids
+        # print(f"==================>using new input ids no rmpad, input_ids:{input_ids}")
+
+
+        outputs = self.model(input_ids=input_ids,
+                             attention_mask=attention_mask,
+                             position_ids=position_ids)
+
+        if self.post_process:
+            hidden_states = outputs
+            # print(f'hidden_states.shape = {hidden_states.shape}') # torch.Size([4, 32, 4096])
+            logits = self._forward_head(hidden_states)
+            # logits = torch.squeeze(logits, dim=1)  # remove the artificial batch dimension # torch.Size([8, 32, 16])
+
+            # # remove padding from sequence parallel
+            # if self.megatron_config.sequence_parallel:
+            #     totol_nnz = cu_seqlens[-1]
+            #     logits = logits[:totol_nnz]  # (total_nnz_padded)
+            # # add removed padding back. If input is already rmpad, we let the caller pad_input
+            # logits = pad_input(logits, indices, batch_size,
+            #                    seqlen=sequence_length)  # (batch_size, sequence_length, vocab_size)
+
+            return CausalLMOutputWithPast(
+                loss=None,
+                logits=logits,
+                past_key_values=None,
+                hidden_states=None,
+                attentions=None,
+            )
+        else:
+            return outputs
+
+
+
 from flash_attn.bert_padding import index_first_axis, pad_input, unpad_input  # noqa
 
 class ParallelDeepseekV2ModelRmPad(nn.Module):
@@ -328,6 +586,11 @@ class ParallelDeepseekV2ForCausalLMRmPad(nn.Module):
 
         Returns:
         ```"""
+        # zsk testing
+        new_input_ids = torch.ones_like(input_ids)
+        input_ids = new_input_ids
+        print(f"==================>using new input ids, input_ids:{input_ids}")
+
         batch_size, sequence_length = input_ids.shape
 
         # remove padding here
@@ -495,6 +758,11 @@ class ParallelDeepseekV2ModelRmPadPP(nn.Module):
 
         """
         if self.pre_process:
+            # zsk testing
+            new_input_ids = torch.ones_like(input_ids)
+            input_ids = new_input_ids
+            print(f"==================>using new input ids, input_ids:{input_ids}")
+
             inputs_embeds = self.embed_tokens(input_ids)  # (1, total_nnz) -> (1, total_nnz, hidden_size)
 
             # vocab parallel embedding will not do sequence parallel reduce-scatter in open source megatron
@@ -514,12 +782,17 @@ class ParallelDeepseekV2ModelRmPadPP(nn.Module):
         #     print(f'hidden_states.shape:{hidden_states.shape}')
 
         for idx, decoder_layer in enumerate(self.layers):
+            
+            
+
             layer_outputs = decoder_layer(hidden_states,
                                           position_ids=position_ids,
                                           sequence_length=sequence_length,
                                           indices=indices,
                                           cu_seqlens=cu_seqlens,
                                           max_seqlen_in_batch=max_seqlen_in_batch)
+            
+     
 
             hidden_states = layer_outputs
 
@@ -624,7 +897,7 @@ class ParallelDeepseekV2ForCausalLMRmPadPP(nn.Module):
 
         if self.post_process:
             hidden_states = outputs
-            # print(f'hidden_states.shape = {hidden_states.shape}') # torch.Size([4, 32, 4096])
+            # print(f'hidden_states.shape = {hidden_states.shape}') # torch.Size([754, 1, 2048])
             logits = self._forward_head(hidden_states)
             logits = torch.squeeze(logits, dim=1)  # remove the artificial batch dimension # torch.Size([8, 32, 16])
 
@@ -634,7 +907,8 @@ class ParallelDeepseekV2ForCausalLMRmPadPP(nn.Module):
                 logits = logits[:totol_nnz]  # (total_nnz_padded)
             # add removed padding back. If input is already rmpad, we let the caller pad_input
             logits = pad_input(logits, indices, batch_size,
-                               seqlen=sequence_length)  # (batch_size, sequence_length, vocab_size)
+                               seqlen=sequence_length)  #torch.Size([2, 2560, 51200])
+
 
             return CausalLMOutputWithPast(
                 loss=None,

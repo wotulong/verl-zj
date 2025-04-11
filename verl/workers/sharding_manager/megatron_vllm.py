@@ -60,6 +60,7 @@ class AllGatherPPModel:
                 f'reserved {torch.cuda.memory_reserved() / 1e9:.4f} GB')
             # since the last initialized rank is the current pp rank, after init, the pp rank is still correct
             mpu.set_pipeline_model_parallel_rank(cur_pp_rank)
+
             if cur_pp_rank != self.pp_rank:
                 models = get_model(model_provider, wrap_with_ddp=False, use_distributed_optimizer=False)
                 models = nn.ModuleList(models)
@@ -292,7 +293,8 @@ class MegatronVLLMShardingManager(BaseShardingManager):
         definition so that it is model-agnostic. If the model doesn't implement this function, 
         we can throw an error to force user disable TP HybridEngine.
         """
-
+        print(f'infer_params:{infer_params}')
+        
         if self.layer_name_mapping.get("qkv_layer_name") in name:
             # if the tensor is qkv, for each param on tp, split into q, k, v
             # concat q, k, v separately.

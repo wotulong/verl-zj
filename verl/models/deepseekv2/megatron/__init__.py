@@ -21,4 +21,6 @@ from .modeling_deepseekv2_megatron import (
     ParallelDeepseekV2ForValueRmPad,
     # rmpad with megatron and pipeline parallelism
     ParallelDeepseekV2ForCausalLMRmPadPP,
-    ParallelDeepseekV2ForValueRmPadPP)
+    ParallelDeepseekV2ForValueRmPadPP,
+    # original model with pp
+    ParallelDeepseekV2ForCausalLMPP)

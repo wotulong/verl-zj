@@ -26,8 +26,10 @@ _MODELS = {
         ("qwen2", ("ParallelQwen2ForCausalLMRmPadPP", "ParallelQwen2ForValueRmPadPP", "ParallelQwen2ForCausalLMRmPad")),
     "MistralForCausalLM": ("mistral", ("ParallelMistralForCausalLMRmPadPP", "ParallelMistralForValueRmPadPP",
                                        "ParallelMistralForCausalLMRmPad")),
+    # "DeepseekV2ForCausalLM":
+    #     ("deepseekv2", ("ParallelDeepseekV2ForCausalLMRmPadPP", "ParallelDeepseekV2ForValueRmPadPP", "ParallelDeepseekV2ForCausalLMRmPad")),
     "DeepseekV2ForCausalLM":
-        ("deepseekv2", ("ParallelDeepseekV2ForCausalLMRmPadPP", "ParallelDeepseekV2ForValueRmPadPP", "ParallelDeepseekV2ForCausalLMRmPad")),
+        ("deepseekv2", ("ParallelDeepseekV2ForCausalLMPP", "ParallelDeepseekV2ForCausalLMPP", "ParallelDeepseekV2ForCausalLMPP")),
 }
 
 

@@ -201,7 +201,7 @@ def get_model_type_from_env():
     """
     Get model_type from an environment variable.
     """
-    return os.getenv("MODEL_TYPE", "deepseek_v2")
+    return os.getenv("MODEL_TYPE", "")
 
 def normalize_pp_vpp_params(params, num_hidden_layers, layer_name='layers'):
     """
@@ -220,8 +220,12 @@ def normalize_pp_vpp_params(params, num_hidden_layers, layer_name='layers'):
         Transform the model name in each model_chunk in each pp stage into the name in inference engine
         """
         from verl.models.deepseekv2.megatron.checkpoint_utils.model_pp_map import MODEL_PP_SCHEDULE
-        model_type = "deepseek_v2"#get_model_type_from_env()
-
+        try:
+            model_type = get_model_type_from_env()
+        except Exception as e:
+            model_type = "other"
+        
+        model_type = "deepseek_v2"
         if model_type in MODEL_PP_SCHEDULE:
             # print(f'调用对了')
             model_pp_schedule = MODEL_PP_SCHEDULE[model_type]
@@ -238,12 +242,7 @@ def normalize_pp_vpp_params(params, num_hidden_layers, layer_name='layers'):
                 layer_offset = pp_offset + vpp_offset
             else:
                 layers_per_pp = num_layers // pp_size
-            #     layer_offset = layers_per_pp * pp_rank
-            # from verl.models.deepseekv2.megatron.checkpoint_utils.model_pp_map import deepseekv2_lite_schedule
-            # model_pp_schedule = deepseekv2_lite_schedule()
-            # layers_pp = [sum(vp) for vp in model_pp_schedule]
-            # layer_offset = sum(layers_pp[:pp_rank]) + sum(model_pp_schedule[pp_rank][:vpp_rank])
-            # print(f"name:{name}, pp_rank:{pp_rank}, vpp_rank:{vpp_rank}, architecture:{architecture}， layer_offset：{layer_offset}")
+                layer_offset = layers_per_pp * pp_rank
 
         if layer_name in name:  # belong to an intermediate layer
             split_name = name.split('.')
@@ -353,10 +352,10 @@ def load_megatron_model_weights(config,
 
         # zsk print
         print("\n\n\n=============:params:")
-        with open("./test_state_dict.txt", 'wt', encoding='utf-8') as f:
-            for name in state_dict:
-                tmp_s = f"name: {name}, param shape: {state_dict[name].shape}\n"
-                f.write(tmp_s)
+        # with open("./test_state_dict.txt", 'a', encoding='utf-8') as f:
+        #     for name in state_dict:
+        #         tmp_s = f"before name: {name}, param shape: {state_dict[name].shape}, weight:{state_dict[name]}\n"
+        #         f.write(tmp_s)
 
         weight_loader(state_dict=state_dict,
                       wrapped_models=parallel_model,

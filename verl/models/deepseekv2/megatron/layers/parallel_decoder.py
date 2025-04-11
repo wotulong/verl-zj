@@ -7,12 +7,13 @@ from megatron.core import ModelParallelConfig
 
 from .parallel_moe import ParallelDeepseekV2MoE
 
-from.parallel_attention import ParallelDeepseekV2Attention, ParallelDeepseekV2AttentionRmPad
+from.parallel_attention import ParallelDeepseekV2Attention, ParallelDeepseekV2AttentionRmPad, ParallelDeepseekV2AttentionRmpadV2
 from .parallel_mlp import ParallelDeepseekV2MLP
 from .parallel_rmsnorm import ParallelDeepseekV2RMSNorm
 
 from verl.utils.megatron_utils import TransformerConfig, convert_deepseekv2_config
-
+import time
+from datetime import datetime
 
 
 class ParallelDeepseekV2DecoderLayer(nn.Module):
@@ -39,6 +40,7 @@ class ParallelDeepseekV2DecoderLayer(nn.Module):
         self.post_attention_layernorm = ParallelDeepseekV2RMSNorm(
             config.hidden_size, megatron_config, eps=config.rms_norm_eps
         )
+        self.layer_idx = layer_idx
 
     def forward(
         self,
@@ -65,6 +67,7 @@ class ParallelDeepseekV2DecoderLayer(nn.Module):
         residual = hidden_states
 
         hidden_states = self.input_layernorm(hidden_states)
+        input_layernorm = hidden_states
 
         # Self Attention
         hidden_states = self.self_attn(
@@ -72,15 +75,34 @@ class ParallelDeepseekV2DecoderLayer(nn.Module):
             attention_mask=attention_mask,
             position_ids=position_ids
         )
+        self_attn = hidden_states
+
         hidden_states = residual + hidden_states
 
         # Fully Connected
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
+        post_attention_layernorm = hidden_states
         hidden_states = self.mlp(hidden_states)
+        mlp_out = hidden_states
         hidden_states = residual + hidden_states
 
         outputs = hidden_states
+        final_out = outputs
+
+        # if torch.distributed.get_rank() == 0:
+        #     # save_path = '/mnt/math/zsk/code/verl-main-20250328/verl/dp-lite-megatron-output-3.txt'
+        #     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        #     # with open(save_path, 'at', encoding='utf-8') as f:
+        #         # info = f'''{timestamp} layer_id:{self.layer_idx}\n input_layernorm: mean:{input_layernorm.mean()}  std:{input_layernorm.std()} shape:{input_layernorm.shape}\n\t{input_layernorm} \n self_attn: mean:{self_attn.mean()} std:{self_attn.std()} shape:{self_attn.shape}\n\t{self_attn}\n post_attention_layernorm: mean:{post_attention_layernorm.mean()} std:{post_attention_layernorm.std()} shape:{post_attention_layernorm.shape}\n\t{post_attention_layernorm} 
+        #         #     mlp_out: mean:{mlp_out.mean()} std:{mlp_out.std()} shape:{mlp_out.shape}\n\t{mlp_out}\n final_out: mean:{outputs.mean()} std:{outputs.std()} shape:{outputs.shape}\n\t{outputs}\n\n'''
+
+        #         # f.write(info+'\n')
+        #     with open("./dp-lite-megatron-output-normpad.txt", 'at', encoding='utf-8') as f:
+        #         info = f'''{timestamp} layer_id:{self.layer_idx}\n input_layernorm:mean:{input_layernorm.mean()}  std:{input_layernorm.std()}   shape:{input_layernorm.shape}\n\t{input_layernorm} \n self_attn: mean:{self_attn.mean()} std:{self_attn.std()}   shape:{self_attn.shape}\n\t{self_attn}\n post_attention_layernorm: mean:{post_attention_layernorm.mean()} std:{post_attention_layernorm.std()}   shape:{post_attention_layernorm.shape}\n\t{post_attention_layernorm}\nmlp_out: mean:{mlp_out.mean()} std:{mlp_out.std()}   shape:{mlp_out.shape}\n\t{mlp_out}\n final_out:mean:{final_out.mean()} std:{final_out.std()}   shape:{final_out.shape}\n\t{final_out}\n\n'''
+        #         f.write(info)
+        #     print(info)
+
         return outputs
 
 class ParallelDeepseekV2DecoderLayerRmPad(nn.Module):
@@ -101,6 +123,8 @@ class ParallelDeepseekV2DecoderLayerRmPad(nn.Module):
             )
             else ParallelDeepseekV2MLP(config, megatron_config)
         )
+        self.layer_idx = layer_idx
+
         self.input_layernorm = ParallelDeepseekV2RMSNorm(
             config.hidden_size, megatron_config, eps=config.rms_norm_eps
         )
@@ -117,9 +141,11 @@ class ParallelDeepseekV2DecoderLayerRmPad(nn.Module):
         cu_seqlens: int = None,
         max_seqlen_in_batch: int = None
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
+
         residual = hidden_states  # (total_nnz // sp, 1, hidden_size)
 
         hidden_states = self.input_layernorm(hidden_states)
+        input_layernorm = hidden_states
 
         # Self Attention
         # (total_nnz // sp, 1, hidden_size) -> all-gather (total_nnz, 1, hidden_size)
@@ -130,6 +156,8 @@ class ParallelDeepseekV2DecoderLayerRmPad(nn.Module):
                                        indices=indices,
                                        cu_seqlens=cu_seqlens,
                                        max_seqlen_in_batch=max_seqlen_in_batch)
+        
+        self_attn = hidden_states
 
         hidden_states = residual + hidden_states
 
@@ -137,9 +165,28 @@ class ParallelDeepseekV2DecoderLayerRmPad(nn.Module):
         # shape changes same as attn
         residual = hidden_states
         hidden_states = self.post_attention_layernorm(hidden_states)
+        post_attention_layernorm = hidden_states
+
         hidden_states = self.mlp(hidden_states)
+
+        mlp_out = hidden_states
+
         hidden_states = residual + hidden_states
 
         outputs = hidden_states
+        final_out = outputs
+
+        if torch.distributed.get_rank() == 0:
+            # save_path = '/mnt/math/zsk/code/verl-main-20250328/verl/dp-lite-megatron-output-3.txt'
+            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+            # with open(save_path, 'at', encoding='utf-8') as f:
+                # info = f'''{timestamp} layer_id:{self.layer_idx}\n input_layernorm: mean:{input_layernorm.mean()}  std:{input_layernorm.std()} shape:{input_layernorm.shape}\n\t{input_layernorm} \n self_attn: mean:{self_attn.mean()} std:{self_attn.std()} shape:{self_attn.shape}\n\t{self_attn}\n post_attention_layernorm: mean:{post_attention_layernorm.mean()} std:{post_attention_layernorm.std()} shape:{post_attention_layernorm.shape}\n\t{post_attention_layernorm} 
+                #     mlp_out: mean:{mlp_out.mean()} std:{mlp_out.std()} shape:{mlp_out.shape}\n\t{mlp_out}\n final_out: mean:{outputs.mean()} std:{outputs.std()} shape:{outputs.shape}\n\t{outputs}\n\n'''
+
+                # f.write(info+'\n')
+            with open("./dp-lite-megatron-output-3.txt", 'at', encoding='utf-8') as f:
+                info = f'''{timestamp} layer_id:{self.layer_idx}\n input_layernorm:mean:{input_layernorm.mean()}  std:{input_layernorm.std()}   shape:{input_layernorm.shape}\n\t{input_layernorm} \n self_attn: mean:{self_attn.mean()} std:{self_attn.std()}   shape:{self_attn.shape}\n\t{self_attn}\n post_attention_layernorm: mean:{post_attention_layernorm.mean()} std:{post_attention_layernorm.std()}   shape:{post_attention_layernorm.shape}\n\t{post_attention_layernorm}\nmlp_out: mean:{mlp_out.mean()} std:{mlp_out.std()}   shape:{mlp_out.shape}\n\t{mlp_out}\n final_out:mean:{final_out.mean()} std:{final_out.std()}   shape:{final_out.shape}\n\t{final_out}\n\n'''
+                f.write(info)
+            print(info)
 
         return outputs

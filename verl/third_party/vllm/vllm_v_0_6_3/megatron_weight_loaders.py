@@ -197,11 +197,11 @@ def deepseekv2_megatron_weight_loader(actor_weights: Dict, vllm_model: nn.Module
             # print(f"==========>> src_name:{src_name}, param name:{name}, param_shape:{param.shape}, weight shape:{loaded_weight.shape}")
             weight_loader(param, loaded_weight)
     
-    # with open("./actor_weight_dp2-lite-202500403.txt", 'wt', encoding='utf-8') as f:
+    # with open("./actor_weight_dp2-lite-202500409.txt", 'wt', encoding='utf-8') as f:
     #     for name, loaded_weight in actor_weights.items():
     #         f.write(f"name:{name}, shape:{loaded_weight.shape}\n\t{loaded_weight}\n")
 
-    # with open("./vllm_weight_dp2-lite-202500403.txt", 'wt', encoding='utf-8') as f:
+    # with open("./vllm_weight_dp2-lite-202500409.txt", 'wt', encoding='utf-8') as f:
     #     for name, loaded_weight in params_dict.items():
     #         f.write(f"name:{name}, shape:{loaded_weight.shape}\n\t{loaded_weight}\n")
 

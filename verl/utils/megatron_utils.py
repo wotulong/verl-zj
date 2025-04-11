@@ -108,6 +108,8 @@ def get_model(model_provider_func,
     config: TransformerConfig = get_model_config(model[0])
     config.fp8 = None
     tfconfig: TransformerConfig = model[0].config
+    # print(f'tfconfig:{tfconfig},config.fp16:{config.fp16}, config.bf16:{config.bf16}')
+
     if config.fp16 or config.bf16:  # the ModelParallelConfig in GPTModel
         model = [Float16Module(config, model_module) for model_module in model]
 

@@ -275,6 +275,7 @@ class ActorRolloutRefWorker(MegatronWorker):
                                   tokenizer=self.tokenizer,
                                   model_hf_config=self.actor_model_config,
                                   train_tp=mpu.get_tensor_model_parallel_world_size())
+                                  
             log_gpu_memory_usage('After building vllm rollout', logger=logger)
 
             # perform weight resharding between actor and rollout

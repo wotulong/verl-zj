@@ -38,29 +38,23 @@ class ParallelMoEGate(nn.Module):
 
     def reset_parameters(self) -> None:
         import torch.nn.init as init
+        import math
 
-        init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        # init.kaiming_uniform_(self.weight, a=math.sqrt(5))
+        init.xavier_uniform_(self.weight, gain=1.0)
+
+        # std = 1 / math.sqrt(self.gating_dim)
+        # init.normal_(self.weight, mean=0, std=std)
 
     def forward(self, hidden_states):
+
         bsz, seq_len, h = hidden_states.shape
         ### compute gating score
         hidden_states = hidden_states.view(-1, h)
 
         local_logits = F.linear(hidden_states, self.weight)
-        # if torch.distributed.get_rank() == 0:
-            # local_logits.shape:torch.Size([845, 64])， 所以这里没有专家并行，不需要收集logit信息
-            # print(f"====> local_logits.shape:{local_logits.shape}")
-        # 没有专家并行，直接使用local值
+    
         logits = local_logits
-
-        # 无专家并行，不需要
-        # # 全收集所有专家logits, 没有专家并行时，怎么处理？
-        # global_logits = [
-        #     torch.empty_like(local_logits) for _ in range(self.num_local_experts)
-        # ]
-        # dist.all_gather(global_logits, local_logits,
-        #                 group=mpu.get_expert_parallel_group())
-        # logits = torch.cat(global_logits, dim=-1)
 
         if self.scoring_func == "softmax":
             scores = logits.softmax(dim=-1, dtype=torch.float32)
@@ -267,6 +261,7 @@ class ParallelDeepseekV2MoE(nn.Module):
             gatherd_idxs = gatherd_idxs.argsort()
             sorted_tokens = gathered_tokens[gatherd_idxs]
             tokens_per_expert = tokens_per_expert_post_gather
+
         tokens_per_expert = tokens_per_expert.cpu().numpy()
 
         outputs = []

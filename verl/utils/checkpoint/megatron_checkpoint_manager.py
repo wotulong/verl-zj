@@ -269,11 +269,11 @@ class MegatronCheckpointManager(BaseCheckpointManager):
                         from transformers import AutoModelForCausalLM
                         model = AutoModelForCausalLM.from_pretrained(self.config.model.path, torch_dtype="auto", trust_remote_code=True)
                 model.save_pretrained(hf_model_ckpt_path, state_dict=state_dict)
-                if hdfs_path is not None:
-                    print(f'Uploading checkpoint to {hdfs_path}')
-                    from verl.utils import hdfs_io
-                    hdfs_io.makedirs(hdfs_path, exist_ok=True)
-                    hdfs_io.copy(src=hf_model_ckpt_path, dst=hdfs_path, dirs_exist_ok=True)
+                # if hdfs_path is not None:
+                #     print(f'Uploading checkpoint to {hdfs_path}')
+                #     from verl.utils import hdfs_io
+                #     hdfs_io.makedirs(hdfs_path, exist_ok=True)
+                #     hdfs_io.copy(src=hf_model_ckpt_path, dst=hdfs_path, dirs_exist_ok=True)
 
         # Save Optimizer
         if 'optimizer' in self.checkpoint_contents:
@@ -289,9 +289,26 @@ class MegatronCheckpointManager(BaseCheckpointManager):
             torch.distributed.barrier()
 
             rng_state_path = get_rng_states_checkpoint_path(local_path)
-            rng_state = self.get_rng_state()
-            torch.save(rng_state, rng_state_path)
-            if self.rank == 0:
-                print(f"saving rng states to {rng_state_path}")
+            try:
+                rng_state = self.get_rng_state()
+                torch.save(rng_state, rng_state_path)
+                if self.rank == 0:
+                    print(f"saving rng states to {rng_state_path}")
+            except Exception as e:
+                try:
+                    rng_state = self.get_rng_state()
+                    torch.save(rng_state, rng_state_path)
+                    if self.rank == 0:
+                        print(f"saving rng states to {rng_state_path}")
+                except Exception as e:
+                    try:
+                        rng_state = self.get_rng_state()
+                        torch.save(rng_state, rng_state_path)
+                        if self.rank == 0:
+                            print(f"saving rng states to {rng_state_path}")
+                    except Exception as e:
+                        if self.rank == 0:
+                            print(f"saving rng states to {rng_state_path} failed")
+            # torch.distributed.barrier()
 
         self.previous_saved_paths.append(local_path)
