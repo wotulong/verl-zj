@@ -436,7 +436,7 @@ def load_state_dict_to_megatron_qwen2(state_dict,
             "model.norm.weight",
         )
 
-        if tie_word_embeddings:
+        if False:#tie_word_embeddings:
             print_rank_0("tie_word_embeddings skip load lm_head")
         else:
             print_rank_0("loading lm_head...")
