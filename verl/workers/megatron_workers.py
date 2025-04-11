@@ -266,16 +266,20 @@ class ActorRolloutRefWorker(MegatronWorker):
             params = normalize_pp_vpp_params(params=params,
                                              num_hidden_layers=self.actor_model_config.num_hidden_layers,
                                              layer_name='layers')
-            assert vllm_mode == 'customized', "Support for vllm>=0.7 for Megatron-LM backend has not been implemented yet."
-            
 
             # 错误：out of memory here
-            rollout = vLLMRollout(actor_module=params,
+            from torch.distributed.device_mesh import init_device_mesh
+            # TODO(sgm): support FSDP hybrid shard for larger model
+            infer_tp = self.config.rollout.tensor_model_parallel_size
+            dp = self.world_size // infer_tp
+            assert self.world_size % infer_tp == 0, f'rollout world_size: {self.world_size} is not divisible by infer_tp: {infer_tp}'
+            rollout_device_mesh = init_device_mesh('cuda', mesh_shape=(dp, infer_tp), mesh_dim_names=['dp', 'infer_tp'])
+            local_path = copy_to_local(self.config.model.path)
+            rollout = vLLMRollout(model_path=local_path,
                                   config=self.config.rollout,
                                   tokenizer=self.tokenizer,
                                   model_hf_config=self.actor_model_config,
-                                  train_tp=mpu.get_tensor_model_parallel_world_size())
-                                  
+                                  device_mesh=rollout_device_mesh)
             log_gpu_memory_usage('After building vllm rollout', logger=logger)
 
             # perform weight resharding between actor and rollout
