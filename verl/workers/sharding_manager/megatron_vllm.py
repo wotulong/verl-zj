@@ -298,7 +298,7 @@ class MegatronVLLMShardingManager(BaseShardingManager):
         definition so that it is model-agnostic. If the model doesn't implement this function, 
         we can throw an error to force user disable TP HybridEngine.
         """
-        print(f'infer_params:{infer_params}')
+        # print(f'infer_params:{infer_params}')
         
         if self.layer_name_mapping.get("qkv_layer_name") in name:
             # if the tensor is qkv, for each param on tp, split into q, k, v

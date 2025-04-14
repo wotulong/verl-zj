@@ -434,12 +434,6 @@ class ParallelDeepseekV2ForCausalLMPP(nn.Module):
 
         Returns:
         ```"""
-        # zsk testing
-        # new_input_ids = torch.ones_like(input_ids)
-        # input_ids = new_input_ids
-        # print(f"==================>using new input ids no rmpad, input_ids:{input_ids}")
-
-
         outputs = self.model(input_ids=input_ids,
                              attention_mask=attention_mask,
                              position_ids=position_ids)
@@ -586,11 +580,6 @@ class ParallelDeepseekV2ForCausalLMRmPad(nn.Module):
 
         Returns:
         ```"""
-        # zsk testing
-        new_input_ids = torch.ones_like(input_ids)
-        input_ids = new_input_ids
-        print(f"==================>using new input ids, input_ids:{input_ids}")
-
         batch_size, sequence_length = input_ids.shape
 
         # remove padding here
