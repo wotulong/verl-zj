@@ -424,12 +424,14 @@ class MegatronVLLMShardingManager(BaseShardingManager):
                                               layer_name='layers')
         self.inference_engine.wake_up()
         model = self.inference_engine.llm_engine.model_executor.driver_worker.worker.model_runner.model
+        self._post_process_params(self.params)
         # for k, v in self.params.items():
         #     print_rank_0("{}_{}".format(k, v.shape))
         # print_rank_0('-----------------------------------------')
         # print_rank_0(dict(model.named_parameters()).keys())
         # print_rank_0('-----------------------------------------')
-        loaded_params = model.load_weights(self._iter_process_params(self.params))
+        loaded_params = model.load_weights(
+             ((name, param) for name, param in self.params.items()))
         # self.inference_engine.sync_model_weights(self.params, load_format='megatron')
 
     def __exit__(self, exc_type, exc_value, traceback):
